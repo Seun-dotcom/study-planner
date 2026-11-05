@@ -15,20 +15,25 @@ const json = (status, body) => ({
 });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function callGemini(model, prompt) {
+async function callGemini(model, prompt, ms) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
   const r = await fetch(
     "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent",
     {
       method: "POST",
+      signal: ctl.signal,
       headers: { "content-type": "application/json", "x-goog-api-key": API_KEY },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 1800, thinkingConfig: { thinkingBudget: 0 } }
+        generationConfig: { maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: 0 } }
       })
     }
   );
   const data = await r.json().catch(() => ({}));
   return { r, data };
+  } finally { clearTimeout(timer); }
 }
 
 exports.handler = async (event) => {
@@ -58,10 +63,12 @@ exports.handler = async (event) => {
   try {
     for (let i = 0; i < plan.length; i++) {
       if (i > 0) {
-        if (Date.now() - started > 6500) break; // stay inside Netlify's ~10s limit
-        await sleep(700 * i);
+        if (Date.now() - started > 5500) break; // stay inside Netlify's ~10s limit
+        await sleep(500);
       }
-      const { r, data } = await callGemini(plan[i], prompt);
+      const left = 8500 - (Date.now() - started);
+      if (left < 1500) break;
+      const { r, data } = await callGemini(plan[i], prompt, left);
       if (r.ok) {
         const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
         const text = parts.map(x => x.text || "").join("\n").trim();
@@ -76,9 +83,12 @@ exports.handler = async (event) => {
     }
     if (last && (last.status === 503 || last.status === 429))
       return json(503, { error: "The AI service is busy right now. Please try again in a minute." });
+    if (!last) return json(504, { error: "The AI took too long to answer. Try Short summary, or try again." });
     return json(502, { error: "Gemini said: " + String(last ? last.msg : "unknown error").slice(0, 300) });
   } catch (e) {
     console.error(e);
+    if (e && e.name === "AbortError")
+      return json(504, { error: "The AI took too long to answer. Try a shorter option like Short summary, or try again." });
     return json(502, { error: "Could not reach the AI service." });
   }
 };
