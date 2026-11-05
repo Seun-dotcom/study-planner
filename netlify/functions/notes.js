@@ -1,5 +1,5 @@
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.MODEL || "gemini-2.5-flash";
+const MODEL = process.env.MODEL || "gemini-3.8-flash";
 const ACCESS_CODE = process.env.ACCESS_CODE || "";
 const LEVELS = {
   "Short summary": "a short summary (about one page)",
