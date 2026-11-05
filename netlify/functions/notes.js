@@ -3,9 +3,9 @@ const MODEL = process.env.MODEL || "gemini-3.8-flash";
 const FALLBACK_MODEL = process.env.FALLBACK_MODEL || "";
 const ACCESS_CODE = process.env.ACCESS_CODE || "";
 const LEVELS = {
-  "Short summary": "a short summary (about one page)",
-  "Detailed study notes": "detailed study notes",
-  "Revision sheet with practice questions": "a revision sheet with practice questions and answers"
+  "Short summary": { text: "a short summary of about 150 words", tokens: 450 },
+  "Detailed study notes": { text: "compact study notes of about 350 words", tokens: 800 },
+  "Revision sheet with practice questions": { text: "a compact revision sheet of about 300 words with 4 practice questions and answers", tokens: 800 }
 };
 
 const json = (status, body) => ({
@@ -15,7 +15,7 @@ const json = (status, body) => ({
 });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function callGemini(model, prompt, ms) {
+async function callGemini(model, prompt, ms, tokens) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), ms);
   try {
@@ -27,7 +27,7 @@ async function callGemini(model, prompt, ms) {
       headers: { "content-type": "application/json", "x-goog-api-key": API_KEY },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: 0 } }
+        generationConfig: { maxOutputTokens: tokens, thinkingConfig: { thinkingBudget: 0 } }
       })
     }
   );
@@ -50,7 +50,7 @@ exports.handler = async (event) => {
   if (!subject) return json(400, { error: "Subject is required." });
 
   const prompt =
-    `Write ${level} for a student on the subject "${subject}"` +
+    `Write ${level.text} for a student on the subject "${subject}"` +
     (topic ? `, topic "${topic}"` : ", covering the core ideas a student should know") +
     ". Use plain text only: short headings in capitals, simple dashes for lists, no markdown symbols. " +
     "Keep it compact and easy to remember: key definitions, main ideas, one short worked example where it fits, " +
@@ -68,7 +68,7 @@ exports.handler = async (event) => {
       }
       const left = 8500 - (Date.now() - started);
       if (left < 1500) break;
-      const { r, data } = await callGemini(plan[i], prompt, left);
+      const { r, data } = await callGemini(plan[i], prompt, left, level.tokens);
       if (r.ok) {
         const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
         const text = parts.map(x => x.text || "").join("\n").trim();
