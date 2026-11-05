@@ -147,7 +147,8 @@ $("gen").onclick=async function(){
       try{sessionStorage.setItem("sp.code",code)}catch(e){}
       r=await callApi(code);
     }
-    var d=await r.json();
+    var raw=await r.text(),d={};
+    try{d=JSON.parse(raw)}catch(x){throw new Error("The server took too long or returned an unexpected reply. Try Short summary, or try again.")}
     if(!r.ok)throw new Error(d.error||"Request failed");
     cur=d.text;$("notes").textContent=cur;
   }catch(e){$("msg").textContent=e.message||"Couldn’t generate notes. Try again in a moment.";if(!cur)$("notes").textContent=""}
