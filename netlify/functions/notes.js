@@ -1,5 +1,6 @@
 const API_KEY = process.env.GEMINI_API_KEY;
 const MODEL = process.env.MODEL || "gemini-3.8-flash";
+const FALLBACK_MODEL = process.env.FALLBACK_MODEL || "";
 const ACCESS_CODE = process.env.ACCESS_CODE || "";
 const LEVELS = {
   "Short summary": "a short summary (about one page)",
@@ -12,6 +13,23 @@ const json = (status, body) => ({
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body)
 });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function callGemini(model, prompt) {
+  const r = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": API_KEY },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 1800, thinkingConfig: { thinkingBudget: 0 } }
+      })
+    }
+  );
+  const data = await r.json().catch(() => ({}));
+  return { r, data };
+}
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed." });
@@ -33,27 +51,32 @@ exports.handler = async (event) => {
     "Keep it compact and easy to remember: key definitions, main ideas, one short worked example where it fits, " +
     "and 3 quick self-check questions at the end.";
 
+  // Retry on temporary overload (503/429), then try the fallback model if one is set.
+  const started = Date.now();
+  const plan = [MODEL, MODEL, MODEL].concat(FALLBACK_MODEL ? [FALLBACK_MODEL] : []);
+  let last = null;
   try {
-    const r = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(MODEL) + ":generateContent",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": API_KEY },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 1800, thinkingConfig: { thinkingBudget: 0 } }
-        })
+    for (let i = 0; i < plan.length; i++) {
+      if (i > 0) {
+        if (Date.now() - started > 6500) break; // stay inside Netlify's ~10s limit
+        await sleep(700 * i);
       }
-    );
-    const data = await r.json();
-    if (!r.ok) {
-      console.error("Gemini API error:", r.status, JSON.stringify(data));
-      return json(502, { error: "The AI service returned an error." });
+      const { r, data } = await callGemini(plan[i], prompt);
+      if (r.ok) {
+        const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+        const text = parts.map(x => x.text || "").join("\n").trim();
+        if (text) return json(200, { text });
+        last = { status: 502, msg: "The AI service returned no text." };
+        continue;
+      }
+      console.error("Gemini API error:", plan[i], r.status, JSON.stringify(data));
+      const msg = (data && data.error && data.error.message) ? data.error.message : "HTTP " + r.status;
+      last = { status: r.status, msg };
+      if (r.status !== 503 && r.status !== 429) break; // not temporary, don't retry
     }
-    const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-    const text = parts.map(x => x.text || "").join("\n").trim();
-    if (!text) return json(502, { error: "The AI service returned no text. Try again." });
-    return json(200, { text });
+    if (last && (last.status === 503 || last.status === 429))
+      return json(503, { error: "The AI service is busy right now. Please try again in a minute." });
+    return json(502, { error: "Gemini said: " + String(last ? last.msg : "unknown error").slice(0, 300) });
   } catch (e) {
     console.error(e);
     return json(502, { error: "Could not reach the AI service." });
